@@ -1,0 +1,10 @@
+{
+  "alpha": 1.0,
+  "text_color_hex": "#ffff80",
+  "hide_remembered": true,
+  "shuffle_mode": true,
+  "bg_head_mode": "custom",
+  "bg_head_hex": "#c0c0c0",
+  "bg_def_mode": "custom",
+  "bg_def_hex": "#c0c0c0"
+}
