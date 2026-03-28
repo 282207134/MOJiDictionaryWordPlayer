@@ -99,6 +99,9 @@ def load_settings() -> dict[str, Any]:
         "tts_voice": "ja-JP-NanamiNeural",
         "auto_interval_sec": 2.0,
         "auto_advance": False,
+        "last_source_kind": "",
+        "last_folder_path": "",
+        "last_file_path": "",
     }
     if not p.is_file():
         return defaults
@@ -118,6 +121,9 @@ def load_settings() -> dict[str, Any]:
             merged["auto_interval_sec"] = 2.0
         merged["auto_interval_sec"] = max(0.5, min(120.0, merged["auto_interval_sec"]))
         merged["auto_advance"] = bool(merged.get("auto_advance", False))
+        merged["last_source_kind"] = str(merged.get("last_source_kind", "") or "")
+        merged["last_folder_path"] = str(merged.get("last_folder_path", "") or "")
+        merged["last_file_path"] = str(merged.get("last_file_path", "") or "")
         merged.pop("text_color_mode", None)
         # 旧版带 text_color_mode：仅 custom 保留 hex；否则清空。无该字段则保留文件中的 text_color_hex。
         mode = str(data.get("text_color_mode", "") or "")
@@ -154,6 +160,9 @@ def save_settings(data: dict[str, Any]) -> None:
         "tts_voice": str(data.get("tts_voice", "ja-JP-NanamiNeural") or "ja-JP-NanamiNeural"),
         "auto_interval_sec": interval,
         "auto_advance": bool(data.get("auto_advance", False)),
+        "last_source_kind": str(data.get("last_source_kind", "") or ""),
+        "last_folder_path": str(data.get("last_folder_path", "") or ""),
+        "last_file_path": str(data.get("last_file_path", "") or ""),
     }
     (DATA_DIR / "settings.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2),

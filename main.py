@@ -260,6 +260,8 @@ class VocabPlayerApp(ctk.CTk):
         self._folder: Optional[Path] = None
         self._auto_thread: Optional[threading.Thread] = None
         self._auto_stop = threading.Event()
+        self._auto_nav_event = threading.Event()
+        self._auto_after_advance_id: Optional[str] = None
         self._tts_busy = threading.Lock()
         self._save_settings_after_id: Optional[str] = None
         self._settings_win: Optional[SettingsWindow] = None
@@ -281,6 +283,7 @@ class VocabPlayerApp(ctk.CTk):
         self._apply_font_sizes()
         self._apply_area_backgrounds()
         self._update_favorite_button()
+        self.after(80, self._try_restore_last_source)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -342,7 +345,7 @@ class VocabPlayerApp(ctk.CTk):
         self.txt_def.pack(fill="both", expand=True, padx=10, pady=10)
 
         nav = ctk.CTkFrame(self)
-        nav.pack(fill="x", padx=12, pady=(0, 8))
+        nav.pack(fill="x", padx=12, pady=(0, 12))
 
         ctk.CTkButton(nav, text="上一条", width=100, command=self._prev).pack(
             side="left", padx=(0, 6)
@@ -372,18 +375,6 @@ class VocabPlayerApp(ctk.CTk):
             self.entry_interval.insert(0, str(iv))
         self.entry_interval.bind("<FocusOut>", lambda _e: self._schedule_save_settings())
         self.entry_interval.bind("<Return>", lambda _e: self._schedule_save_settings())
-
-        bottom = ctk.CTkFrame(self)
-        bottom.pack(fill="x", padx=12, pady=(0, 12))
-
-        ctk.CTkLabel(bottom, text="跳转", width=50).pack(side="left", padx=(0, 6))
-        self.entry_jump = ctk.CTkEntry(bottom, width=80, placeholder_text="序号")
-        self.entry_jump.pack(side="left", padx=(0, 6))
-        ctk.CTkButton(bottom, text="跳转", width=70, command=self._jump).pack(
-            side="left", padx=(0, 12)
-        )
-        self.lbl_source = ctk.CTkLabel(bottom, text="", anchor="w")
-        self.lbl_source.pack(side="left", fill="x", expand=True)
 
     def _open_settings(self) -> None:
         if self._settings_win is not None:
@@ -504,7 +495,7 @@ class VocabPlayerApp(ctk.CTk):
 
     def _apply_chrome_text_colors(self) -> None:
         c = self._default_text_fg()
-        for w in (self.lbl_folder, self.lbl_count, self.lbl_source, self.entry_interval):
+        for w in (self.lbl_folder, self.lbl_count, self.entry_interval):
             try:
                 w.configure(text_color=c)
             except Exception:
@@ -674,9 +665,8 @@ class VocabPlayerApp(ctk.CTk):
         self._settings["auto_advance"] = self.var_auto.get()
         storage.save_settings(self._settings)
 
-    def _set_text_widgets(self, head: str, body: str, source: str) -> None:
+    def _set_text_widgets(self, head: str, body: str) -> None:
         content_c = self._resolved_content_text_color()
-        chrome_c = self._default_text_fg()
         for w, content in ((self.txt_head, head), (self.txt_def, body)):
             w.configure(state="normal")
             w.delete("1.0", "end")
@@ -686,7 +676,6 @@ class VocabPlayerApp(ctk.CTk):
             except Exception:
                 pass
             w.configure(state="disabled")
-        self.lbl_source.configure(text=source, text_color=chrome_c)
         self._apply_area_backgrounds()
 
     def _show_current(self) -> None:
@@ -702,7 +691,7 @@ class VocabPlayerApp(ctk.CTk):
                 msg += "\n可关闭「隐藏已记住」或在设置中打开「管理已记住…」移除部分条目。"
             else:
                 msg += "\n请点击上方「选择文件夹」或「单个文件…」加载 PDF / TXT。"
-            self._set_text_widgets("", msg, "")
+            self._set_text_widgets("", msg)
             self.lbl_count.configure(text=f"0 条（词库 {total_pool}，已记住 {rem}）")
             self._update_favorite_button()
             return
@@ -710,11 +699,7 @@ class VocabPlayerApp(ctk.CTk):
         e = self._entries[self._index]
         vis_n = len(self._entries)
         head = f"{e.word}  |  {e.reading}"
-        self._set_text_widgets(
-            head,
-            e.definitions or "（无释义行）",
-            f"来源：{e.source}  ·  词库 {total_pool} 条  ·  已记住 {rem} 条",
-        )
+        self._set_text_widgets(head, e.definitions or "（无释义行）")
         self.lbl_count.configure(text=f"{vis_n} 条显示（词库 {total_pool}，已记住 {rem}）")
         self._update_favorite_button()
 
@@ -735,6 +720,59 @@ class VocabPlayerApp(ctk.CTk):
             self._index = min(self._index, max(0, len(self._entries) - 1))
         self._show_current()
 
+    def _try_restore_last_source(self) -> None:
+        """启动时若存在上次成功打开的文件夹或文件，则自动加载。"""
+        kind = str(self._settings.get("last_source_kind", "") or "")
+        if kind == "folder":
+            raw = str(self._settings.get("last_folder_path", "") or "").strip()
+            if not raw:
+                return
+            p = Path(raw)
+            if not p.is_dir():
+                return
+            entries = load_folder(p)
+            self._load_entries(entries, p)
+            if not entries:
+                self._set_text_widgets(
+                    "",
+                    "上次打开的文件夹中未解析到词条。\n支持：.pdf / .txt",
+                )
+        elif kind == "file":
+            raw = str(self._settings.get("last_file_path", "") or "").strip()
+            if not raw:
+                return
+            p = Path(raw)
+            if not p.is_file():
+                return
+            entries = load_file(p)
+            self._load_entries(entries, p.parent)
+            self.lbl_folder.configure(text=str(p))
+            if not entries:
+                self._set_text_widgets("", "未能从上次打开的文件解析到词条。")
+
+    def _initial_dir_for_dialog(self) -> str:
+        d = str(self._settings.get("last_folder_path", "") or "").strip()
+        if d and Path(d).is_dir():
+            return d
+        f = str(self._settings.get("last_file_path", "") or "").strip()
+        if f:
+            parent = Path(f).parent
+            if parent.is_dir():
+                return str(parent)
+        return ""
+
+    def _persist_last_folder(self, p: Path) -> None:
+        self._settings["last_source_kind"] = "folder"
+        self._settings["last_folder_path"] = str(p.resolve())
+        self._settings["last_file_path"] = ""
+        self._schedule_save_settings()
+
+    def _persist_last_file(self, p: Path) -> None:
+        self._settings["last_source_kind"] = "file"
+        self._settings["last_file_path"] = str(p.resolve())
+        self._settings["last_folder_path"] = str(p.parent.resolve())
+        self._schedule_save_settings()
+
     def _load_entries(self, entries: List[VocabEntry], folder_hint: Optional[Path]) -> None:
         self._stop_auto()
         self._pool = list(entries)
@@ -752,13 +790,28 @@ class VocabPlayerApp(ctk.CTk):
         eid = storage.entry_id(e)
         if eid in self._remembered:
             return
+
+        was_auto = self.var_auto.get()
+        hide = self.var_hide_remembered.get()
+        # 隐藏并从列表移除后，自动线程仍处在「刚播完上一词、接下来要间隔再 _next」的旧阶段，会与
+        # 新列表/索引错位，出现下一条几乎不显示、不朗读就再跳。隐藏移除时必须停掉并稍后重开自动。
+        if was_auto and hide:
+            self._stop_auto()
+        elif was_auto:
+            self._cancel_auto_pending_advance()
+
         self._remembered[eid] = storage.meta_for_entry(e)
         storage.save_remembered(self._remembered)
-        if self.var_hide_remembered.get():
+        if hide:
             self._entries.pop(self._index)
             if self._index >= len(self._entries):
                 self._index = max(0, len(self._entries) - 1)
         self._show_current()
+
+        if was_auto and hide and self._entries:
+            self.after(120, self._start_auto)
+        elif was_auto and hide and not self._entries:
+            self.var_auto.set(False)
 
     def _on_hide_toggle(self) -> None:
         self._settings["hide_remembered"] = self.var_hide_remembered.get()
@@ -831,32 +884,39 @@ class VocabPlayerApp(ctk.CTk):
         ctk.CTkButton(row, text="关闭", command=top.destroy).pack(side="left")
 
     def _pick_folder(self) -> None:
-        d = filedialog.askdirectory(title="选择词条文件夹")
+        init = self._initial_dir_for_dialog()
+        d = filedialog.askdirectory(
+            title="选择词条文件夹",
+            **({"initialdir": init} if init else {}),
+        )
         if not d:
             return
         p = Path(d)
+        self._persist_last_folder(p)
         entries = load_folder(p)
         self._load_entries(entries, p)
         if not entries:
             self._set_text_widgets(
                 "",
                 "该文件夹内未解析到词条。\n支持：.pdf / .txt\n格式示例：\n呆気ない | あっけない ④\n[形] 释义…",
-                "",
             )
 
     def _pick_file(self) -> None:
+        init = self._initial_dir_for_dialog()
         f = filedialog.askopenfilename(
             title="选择 PDF 或 TXT",
             filetypes=[("PDF / 文本", "*.pdf *.txt"), ("全部", "*.*")],
+            **({"initialdir": init} if init else {}),
         )
         if not f:
             return
         p = Path(f)
+        self._persist_last_file(p)
         entries = load_file(p)
         self._load_entries(entries, p.parent)
         self.lbl_folder.configure(text=str(p))
         if not entries:
-            self._set_text_widgets("", "未能从该文件解析到词条。", str(p.name))
+            self._set_text_widgets("", "未能从该文件解析到词条。")
 
     def _prev(self) -> None:
         if not self._entries:
@@ -869,17 +929,6 @@ class VocabPlayerApp(ctk.CTk):
             return
         self._index = (self._index + 1) % len(self._entries)
         self._show_current()
-
-    def _jump(self) -> None:
-        if not self._entries:
-            return
-        raw = self.entry_jump.get().strip()
-        if not raw.isdigit():
-            return
-        n = int(raw)
-        if 1 <= n <= len(self._entries):
-            self._index = n - 1
-            self._show_current()
 
     def _interval_sec(self) -> float:
         try:
@@ -974,8 +1023,33 @@ class VocabPlayerApp(ctk.CTk):
             pass
         self.txt_def.configure(state="disabled")
 
+    def _cancel_auto_pending_advance(self) -> None:
+        """取消尚未执行的自动「下一条」after 回调，并唤醒自动线程上的 wait。"""
+        aid = self._auto_after_advance_id
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except Exception:
+                pass
+            self._auto_after_advance_id = None
+        self._auto_nav_event.set()
+
+    def _auto_main_thread_advance(self) -> None:
+        """仅由自动播放后台线程通过 after 调度：前进一条并通知后台可继续。"""
+        self._auto_after_advance_id = None
+        try:
+            if self._auto_stop.is_set() or not self.var_auto.get():
+                return
+            if not self._entries:
+                return
+            self._index = (self._index + 1) % len(self._entries)
+            self._show_current()
+        finally:
+            self._auto_nav_event.set()
+
     def _stop_auto(self) -> None:
         self._auto_stop.set()
+        self._cancel_auto_pending_advance()
         if self._auto_thread and self._auto_thread.is_alive():
             self._auto_thread.join(timeout=2.0)
         self._auto_stop.clear()
@@ -1020,8 +1094,10 @@ class VocabPlayerApp(ctk.CTk):
                     ev.wait(0.08)
                 if self._auto_stop.is_set():
                     break
-                self.after(0, self._next)
-                time.sleep(0.05)
+                # 须等主线程完成本次「下一条」后再进入下一轮；原 after(0,_next)+短 sleep 会堆积多次 _next 导致连跳
+                self._auto_nav_event.clear()
+                self._auto_after_advance_id = self.after(0, self._auto_main_thread_advance)
+                self._auto_nav_event.wait(timeout=120.0)
 
         self._auto_thread = threading.Thread(target=loop, daemon=True)
         self._auto_thread.start()
