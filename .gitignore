@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+
+# 本地用户数据（进度、设置、收藏等）；data/.gitkeep 用于保留目录
+data/*.json
