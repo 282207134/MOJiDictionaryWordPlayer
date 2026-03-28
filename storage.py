@@ -5,12 +5,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 from parser_vocab import VocabEntry
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+
+def _project_root() -> Path:
+    """开发时取源码目录；PyInstaller 打包后取 exe 所在目录，避免数据写到临时目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+DATA_DIR = _project_root() / "data"
 
 
 def ensure_data_dir() -> None:
