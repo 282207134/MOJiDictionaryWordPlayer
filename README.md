@@ -46,6 +46,14 @@ py main.py
 | `remembered.json` | 「已记住」词条 |
 | `favorites.json` | 「收藏」词条 |
 
+`data/*.json` 已列入 `.gitignore`，不会提交到 Git。若你本地仓库里曾经跟踪过这些 JSON，可在项目根目录执行一次：
+
+```bash
+git rm --cached data/*.json
+git commit -m "chore: 停止跟踪 data 下用户数据"
+git push
+```
+
 ## 导出收藏
 
 在 **设置** 窗口中点击 **「导出收藏为 TXT…」**，可将当前收藏导出为文本，便于备份或在外部编辑。
