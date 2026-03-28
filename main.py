@@ -12,7 +12,7 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import colorchooser, filedialog
+from tkinter import colorchooser, filedialog, messagebox
 from typing import Any, List, Optional
 
 import customtkinter as ctk
@@ -23,7 +23,12 @@ import storage
 from parser_vocab import VocabEntry, load_file, load_folder
 
 DEFAULT_VOICE = "ja-JP-NanamiNeural"
+VOICE_OPTIONS = [DEFAULT_VOICE, "ja-JP-KeitaNeural"]
 WINDOW_TITLE = "词条播放器 MOJi PDF文本"
+
+# 词汇区右侧「已记住」按钮尺寸（参照常见红框区域）
+REMEMBER_BTN_WIDTH = 200
+REMEMBER_BTN_HEIGHT = 92
 
 
 def reading_for_tts(reading: str) -> str:
@@ -32,6 +37,210 @@ def reading_for_tts(reading: str) -> str:
     s = re.sub(r"\s*[⓪①②③④⑤⑥⑦⑧⑨]+\s*$", "", s)
     s = re.sub(r"\s+\d+\s*$", "", s)
     return s.strip() or reading.strip()
+
+
+def _section_label(parent: ctk.CTkFrame, text: str) -> None:
+    ctk.CTkLabel(parent, text=text, font=ctk.CTkFont(weight="bold")).pack(
+        anchor="w", pady=(10, 4)
+    )
+
+
+class SettingsWindow(ctk.CTkToplevel):
+    """外観・語彙ソース・TTS・復習オプションをまとめた設定ウィンドウ。"""
+
+    def __init__(self, app: "VocabPlayerApp") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("设置")
+        self.geometry("540x680")
+        self.minsize(480, 520)
+        self.transient(app)
+
+        body = ctk.CTkScrollableFrame(self)
+        body.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+
+        _section_label(body, "复习与列表")
+        row_rev = ctk.CTkFrame(body, fg_color="transparent")
+        row_rev.pack(fill="x")
+        ctk.CTkCheckBox(
+            row_rev,
+            text="隐藏已记住",
+            variable=app.var_hide_remembered,
+            command=app._on_hide_toggle,
+        ).pack(side="left", padx=(0, 12))
+        ctk.CTkCheckBox(
+            row_rev,
+            text="乱序模式",
+            variable=app.var_shuffle,
+            command=app._on_shuffle_toggle,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(row_rev, text="重新打乱", width=90, command=app._reshuffle_visible).pack(
+            side="left", padx=(0, 12)
+        )
+        ctk.CTkButton(row_rev, text="管理已记住…", width=110, command=app._open_remembered_manager).pack(
+            side="left"
+        )
+
+        _section_label(body, "文字与背景")
+        row_tc = ctk.CTkFrame(body, fg_color="transparent")
+        row_tc.pack(fill="x")
+        ctk.CTkLabel(row_tc, text="词汇/释义文字色").pack(side="left", padx=(0, 6))
+        ctk.CTkButton(row_tc, text="选色…", width=70, command=app._pick_content_text_color).pack(
+            side="left", padx=(0, 6)
+        )
+        ctk.CTkButton(row_tc, text="恢复主题", width=72, command=app._reset_content_text_color).pack(
+            side="left", padx=(0, 6)
+        )
+        self.lbl_content_text_val = ctk.CTkLabel(row_tc, text="主题默认", width=100, anchor="w")
+        self.lbl_content_text_val.pack(side="left", padx=(0, 8))
+
+        row_alpha = ctk.CTkFrame(body, fg_color="transparent")
+        row_alpha.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(row_alpha, text="窗口透明度").pack(side="left", padx=(0, 8))
+        self.slider_alpha = ctk.CTkSlider(
+            row_alpha,
+            from_=0.25,
+            to=1.0,
+            number_of_steps=75,
+            width=200,
+            command=app._on_alpha_slider,
+        )
+        self.slider_alpha.set(float(app._settings.get("alpha", 1.0)))
+        self.slider_alpha.pack(side="left", padx=(0, 8))
+        self.lbl_alpha = ctk.CTkLabel(row_alpha, text="100%", width=44)
+        self.lbl_alpha.pack(side="left")
+        pct = int(round(float(app._settings.get("alpha", 1.0)) * 100))
+        self.lbl_alpha.configure(text=f"{pct}%")
+
+        row_bg = ctk.CTkFrame(body, fg_color="transparent")
+        row_bg.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(row_bg, text="词汇区背景").pack(side="left", padx=(0, 4))
+        ctk.CTkButton(row_bg, text="选色…", width=56, command=app._pick_bg_head).pack(
+            side="left", padx=(0, 6)
+        )
+        self.lbl_bg_head_val = ctk.CTkLabel(row_bg, text="跟随主题", width=96, anchor="w")
+        self.lbl_bg_head_val.pack(side="left", padx=(0, 12))
+        ctk.CTkLabel(row_bg, text="释义区背景").pack(side="left", padx=(0, 4))
+        ctk.CTkButton(row_bg, text="选色…", width=56, command=app._pick_bg_def).pack(
+            side="left", padx=(0, 6)
+        )
+        self.lbl_bg_def_val = ctk.CTkLabel(row_bg, text="跟随主题", width=96, anchor="w")
+        self.lbl_bg_def_val.pack(side="left", padx=(0, 12))
+        ctk.CTkButton(row_bg, text="背景恢复默认", width=100, command=app._reset_area_bgs).pack(
+            side="left"
+        )
+
+        _section_label(body, "字体大小")
+        row_fh = ctk.CTkFrame(body, fg_color="transparent")
+        row_fh.pack(fill="x")
+        ctk.CTkLabel(row_fh, text="词汇区字号").pack(side="left", padx=(0, 8))
+        self.slider_font_head = ctk.CTkSlider(
+            row_fh,
+            from_=10,
+            to=48,
+            number_of_steps=38,
+            width=220,
+            command=self._on_font_head_slider,
+        )
+        self.slider_font_head.set(int(app._settings.get("font_head_pt", 20)))
+        self.slider_font_head.pack(side="left", padx=(0, 8))
+        self.lbl_font_head_pt = ctk.CTkLabel(row_fh, text="", width=56, anchor="w")
+        self.lbl_font_head_pt.pack(side="left")
+        self._on_font_head_slider(self.slider_font_head.get())
+
+        row_fd = ctk.CTkFrame(body, fg_color="transparent")
+        row_fd.pack(fill="x", pady=(4, 0))
+        ctk.CTkLabel(row_fd, text="释义区字号").pack(side="left", padx=(0, 8))
+        self.slider_font_def = ctk.CTkSlider(
+            row_fd,
+            from_=9,
+            to=40,
+            number_of_steps=31,
+            width=220,
+            command=self._on_font_def_slider,
+        )
+        self.slider_font_def.set(int(app._settings.get("font_def_pt", 15)))
+        self.slider_font_def.pack(side="left", padx=(0, 8))
+        self.lbl_font_def_pt = ctk.CTkLabel(row_fd, text="", width=56, anchor="w")
+        self.lbl_font_def_pt.pack(side="left")
+        self._on_font_def_slider(self.slider_font_def.get())
+
+        _section_label(body, "朗读语音")
+        row_tts = ctk.CTkFrame(body, fg_color="transparent")
+        row_tts.pack(fill="x")
+        self.combo_voice = ctk.CTkComboBox(
+            row_tts,
+            values=list(VOICE_OPTIONS),
+            width=220,
+            command=lambda _v: app._schedule_save_settings(),
+        )
+        self.combo_voice.set(str(app._settings.get("tts_voice", DEFAULT_VOICE)))
+        self.combo_voice.pack(side="left")
+
+        _section_label(body, "收藏")
+        row_fav = ctk.CTkFrame(body, fg_color="transparent")
+        row_fav.pack(fill="x")
+        ctk.CTkButton(
+            row_fav,
+            text="导出收藏为 TXT…",
+            width=180,
+            command=app._export_favorites,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            row_fav,
+            text="主窗口可点击「收藏」添加当前词条。",
+            text_color=("gray30", "gray70"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        foot = ctk.CTkFrame(self)
+        foot.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(foot, text="关闭", width=100, command=self._on_close).pack(side="right")
+
+        self.sync_labels_from_app()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_font_head_slider(self, value: float | str) -> None:
+        pt = int(round(float(value)))
+        pt = max(10, min(48, pt))
+        self.lbl_font_head_pt.configure(text=f"{pt} pt")
+        self.app._settings["font_head_pt"] = pt
+        self.app._apply_font_sizes()
+        self.app._schedule_save_settings()
+
+    def _on_font_def_slider(self, value: float | str) -> None:
+        pt = int(round(float(value)))
+        pt = max(9, min(40, pt))
+        self.lbl_font_def_pt.configure(text=f"{pt} pt")
+        self.app._settings["font_def_pt"] = pt
+        self.app._apply_font_sizes()
+        self.app._schedule_save_settings()
+
+    def sync_labels_from_app(self) -> None:
+        hx = str(self.app._settings.get("text_color_hex", "") or "").strip()
+        if hx:
+            self.lbl_content_text_val.configure(text=hx)
+        else:
+            self.lbl_content_text_val.configure(text="主题默认")
+        if str(self.app._settings.get("bg_head_mode", "default")) == "custom":
+            self.lbl_bg_head_val.configure(text=str(self.app._settings.get("bg_head_hex", "")))
+        else:
+            self.lbl_bg_head_val.configure(text="跟随主题")
+        if str(self.app._settings.get("bg_def_mode", "default")) == "custom":
+            self.lbl_bg_def_val.configure(text=str(self.app._settings.get("bg_def_hex", "")))
+        else:
+            self.lbl_bg_def_val.configure(text="跟随主题")
+        a = float(self.app._settings.get("alpha", 1.0))
+        self.lbl_alpha.configure(text=f"{int(round(a * 100))}%")
+        try:
+            self.slider_alpha.set(a)
+        except Exception:
+            pass
+
+    def _on_close(self) -> None:
+        self.app._flush_settings_from_settings_ui()
+        self.app._settings_win = None
+        self.destroy()
 
 
 class VocabPlayerApp(ctk.CTk):
@@ -43,6 +252,7 @@ class VocabPlayerApp(ctk.CTk):
 
         self._settings: dict[str, Any] = storage.load_settings()
         self._remembered: dict[str, dict[str, str]] = storage.load_remembered()
+        self._favorites: dict[str, dict[str, str]] = storage.load_favorites()
 
         self._pool: List[VocabEntry] = []
         self._entries: List[VocabEntry] = []
@@ -52,6 +262,7 @@ class VocabPlayerApp(ctk.CTk):
         self._auto_stop = threading.Event()
         self._tts_busy = threading.Lock()
         self._save_settings_after_id: Optional[str] = None
+        self._settings_win: Optional[SettingsWindow] = None
 
         pygame.mixer.init()
 
@@ -61,14 +272,15 @@ class VocabPlayerApp(ctk.CTk):
         self.var_shuffle = ctk.BooleanVar(
             value=bool(self._settings.get("shuffle_mode", False))
         )
+        self.var_auto = ctk.BooleanVar(value=bool(self._settings.get("auto_advance", False)))
 
         self._build_ui()
         self._apply_alpha(self._settings.get("alpha", 1.0))
-        self._update_content_text_label()
-        self._apply_text_color()
         self._apply_chrome_text_colors()
-        self._update_bg_labels()
+        self._apply_text_color()
+        self._apply_font_sizes()
         self._apply_area_backgrounds()
+        self._update_favorite_button()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -76,93 +288,20 @@ class VocabPlayerApp(ctk.CTk):
         top = ctk.CTkFrame(self)
         top.pack(fill="x", padx=12, pady=(12, 4))
 
+        ctk.CTkButton(top, text="设置…", width=88, command=self._open_settings).pack(
+            side="left", padx=(0, 8)
+        )
         ctk.CTkButton(top, text="选择文件夹", width=120, command=self._pick_folder).pack(
             side="left", padx=(0, 8)
         )
         ctk.CTkButton(top, text="单个文件…", width=100, command=self._pick_file).pack(
             side="left", padx=(0, 8)
         )
-
         self.lbl_folder = ctk.CTkLabel(top, text="未选择目录", anchor="w")
         self.lbl_folder.pack(side="left", fill="x", expand=True)
 
         self.lbl_count = ctk.CTkLabel(top, text="0 条", width=200, anchor="e")
         self.lbl_count.pack(side="right")
-
-        row_opts = ctk.CTkFrame(self)
-        row_opts.pack(fill="x", padx=12, pady=(0, 4))
-
-        ctk.CTkCheckBox(
-            row_opts,
-            text="隐藏已记住",
-            variable=self.var_hide_remembered,
-            command=self._on_hide_toggle,
-        ).pack(side="left", padx=(0, 12))
-
-        ctk.CTkCheckBox(
-            row_opts,
-            text="乱序模式",
-            variable=self.var_shuffle,
-            command=self._on_shuffle_toggle,
-        ).pack(side="left", padx=(0, 8))
-
-        ctk.CTkButton(row_opts, text="重新打乱", width=90, command=self._reshuffle_visible).pack(
-            side="left", padx=(0, 12)
-        )
-
-        ctk.CTkButton(row_opts, text="管理已记住…", width=110, command=self._open_remembered_manager).pack(
-            side="left", padx=(0, 0)
-        )
-
-        row_look = ctk.CTkFrame(self)
-        row_look.pack(fill="x", padx=12, pady=(0, 6))
-
-        ctk.CTkLabel(row_look, text="文字颜色（词汇/释义）").pack(side="left", padx=(0, 6))
-        ctk.CTkButton(row_look, text="选色…", width=70, command=self._pick_content_text_color).pack(
-            side="left", padx=(0, 6)
-        )
-        ctk.CTkButton(row_look, text="恢复主题", width=72, command=self._reset_content_text_color).pack(
-            side="left", padx=(0, 6)
-        )
-        self.lbl_content_text_val = ctk.CTkLabel(
-            row_look, text="主题默认", width=100, anchor="w"
-        )
-        self.lbl_content_text_val.pack(side="left", padx=(0, 16))
-
-        ctk.CTkLabel(row_look, text="窗口透明度").pack(side="left", padx=(0, 6))
-        self.slider_alpha = ctk.CTkSlider(
-            row_look,
-            from_=0.25,
-            to=1.0,
-            number_of_steps=75,
-            width=180,
-            command=self._on_alpha_slider,
-        )
-        self.slider_alpha.set(float(self._settings.get("alpha", 1.0)))
-        self.slider_alpha.pack(side="left", padx=(0, 8))
-        self.lbl_alpha = ctk.CTkLabel(row_look, text="100%", width=44)
-        self.lbl_alpha.pack(side="left")
-
-        row_bg = ctk.CTkFrame(self)
-        row_bg.pack(fill="x", padx=12, pady=(0, 4))
-
-        ctk.CTkLabel(row_bg, text="词汇区背景").pack(side="left", padx=(0, 4))
-        ctk.CTkButton(row_bg, text="选色…", width=56, command=self._pick_bg_head).pack(
-            side="left", padx=(0, 6)
-        )
-        self.lbl_bg_head_val = ctk.CTkLabel(row_bg, text="跟随主题", width=96, anchor="w")
-        self.lbl_bg_head_val.pack(side="left", padx=(0, 12))
-
-        ctk.CTkLabel(row_bg, text="释义区背景").pack(side="left", padx=(0, 4))
-        ctk.CTkButton(row_bg, text="选色…", width=56, command=self._pick_bg_def).pack(
-            side="left", padx=(0, 6)
-        )
-        self.lbl_bg_def_val = ctk.CTkLabel(row_bg, text="跟随主题", width=96, anchor="w")
-        self.lbl_bg_def_val.pack(side="left", padx=(0, 12))
-
-        ctk.CTkButton(row_bg, text="背景恢复默认", width=100, command=self._reset_area_bgs).pack(
-            side="left", padx=(0, 0)
-        )
 
         mid = ctk.CTkFrame(self)
         mid.pack(fill="both", expand=True, padx=12, pady=6)
@@ -170,22 +309,36 @@ class VocabPlayerApp(ctk.CTk):
         self.frm_vocab = ctk.CTkFrame(mid, corner_radius=8)
         self.frm_vocab.pack(fill="x", pady=(0, 10))
 
+        fh = int(self._settings.get("font_head_pt", 20))
+        self.txt_head = ctk.CTkTextbox(self.frm_vocab, height=80, font=ctk.CTkFont(size=fh))
+        self.txt_head.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+
+        right_col = ctk.CTkFrame(self.frm_vocab, fg_color="transparent")
+        right_col.pack(side="right", padx=(10, 12), pady=10, fill="y")
+
         self.btn_remember = ctk.CTkButton(
-            self.frm_vocab,
-            text="已记住（隐藏）",
-            width=118,
+            right_col,
+            text="已记住",
+            width=REMEMBER_BTN_WIDTH,
+            height=REMEMBER_BTN_HEIGHT,
             command=self._mark_current_remembered,
         )
-        self.btn_remember.pack(side="right", padx=(10, 12), pady=12, anchor="n")
+        self.btn_remember.pack(anchor="ne")
 
-        self.txt_head = ctk.CTkTextbox(self.frm_vocab, height=108, font=ctk.CTkFont(size=20))
-        self.txt_head.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
-        self.txt_head.configure(state="disabled")
+        self.btn_favorite = ctk.CTkButton(
+            right_col,
+            text="收藏",
+            width=REMEMBER_BTN_WIDTH,
+            height=44,
+            command=self._toggle_favorite,
+        )
+        self.btn_favorite.pack(anchor="ne", pady=(10, 0))
 
         self.frm_def = ctk.CTkFrame(mid, corner_radius=8)
         self.frm_def.pack(fill="both", expand=True)
 
-        self.txt_def = ctk.CTkTextbox(self.frm_def, font=ctk.CTkFont(size=15))
+        fd = int(self._settings.get("font_def_pt", 15))
+        self.txt_def = ctk.CTkTextbox(self.frm_def, font=ctk.CTkFont(size=fd))
         self.txt_def.pack(fill="both", expand=True, padx=10, pady=10)
 
         nav = ctk.CTkFrame(self)
@@ -201,24 +354,24 @@ class VocabPlayerApp(ctk.CTk):
             side="left", padx=(0, 6)
         )
 
-        self.var_auto = ctk.BooleanVar(value=False)
+        auto_nav = ctk.CTkFrame(nav, fg_color="transparent")
+        auto_nav.pack(side="left", padx=(14, 0))
         ctk.CTkCheckBox(
-            nav, text="自动下一条", variable=self.var_auto, command=self._toggle_auto
-        ).pack(side="left", padx=(16, 6))
-
-        ctk.CTkLabel(nav, text="间隔(秒)").pack(side="left", padx=(8, 4))
-        self.spin_interval = ctk.CTkEntry(nav, width=50)
-        self.spin_interval.insert(0, "2")
-        self.spin_interval.pack(side="left", padx=(0, 12))
-
-        ctk.CTkLabel(nav, text="朗读语音").pack(side="left", padx=(8, 4))
-        self.combo_voice = ctk.CTkComboBox(
-            nav,
-            values=[DEFAULT_VOICE, "ja-JP-KeitaNeural"],
-            width=200,
-        )
-        self.combo_voice.set(DEFAULT_VOICE)
-        self.combo_voice.pack(side="left")
+            auto_nav,
+            text="自动下一条",
+            variable=self.var_auto,
+            command=self._toggle_auto,
+        ).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(auto_nav, text="间隔(秒)").pack(side="left", padx=(0, 4))
+        self.entry_interval = ctk.CTkEntry(auto_nav, width=50)
+        self.entry_interval.pack(side="left", padx=(0, 0))
+        iv = float(self._settings.get("auto_interval_sec", 2.0))
+        if iv == int(iv):
+            self.entry_interval.insert(0, str(int(iv)))
+        else:
+            self.entry_interval.insert(0, str(iv))
+        self.entry_interval.bind("<FocusOut>", lambda _e: self._schedule_save_settings())
+        self.entry_interval.bind("<Return>", lambda _e: self._schedule_save_settings())
 
         bottom = ctk.CTkFrame(self)
         bottom.pack(fill="x", padx=12, pady=(0, 12))
@@ -231,6 +384,108 @@ class VocabPlayerApp(ctk.CTk):
         )
         self.lbl_source = ctk.CTkLabel(bottom, text="", anchor="w")
         self.lbl_source.pack(side="left", fill="x", expand=True)
+
+    def _open_settings(self) -> None:
+        if self._settings_win is not None:
+            try:
+                if self._settings_win.winfo_exists():
+                    self._settings_win.lift()
+                    self._settings_win.focus()
+                    self._settings_win.sync_labels_from_app()
+                    return
+            except Exception:
+                pass
+        self._settings_win = SettingsWindow(self)
+
+    def _flush_settings_from_settings_ui(self) -> None:
+        sw = self._settings_win
+        if sw is None:
+            return
+        try:
+            if not sw.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        try:
+            self._settings["tts_voice"] = sw.combo_voice.get() or DEFAULT_VOICE
+        except (AttributeError, tk.TclError):
+            pass
+
+    def _flush_interval_from_main_entry(self) -> None:
+        try:
+            raw = self.entry_interval.get().strip().replace(",", ".")
+            v = float(raw)
+            self._settings["auto_interval_sec"] = max(0.5, min(120.0, v))
+        except (ValueError, tk.TclError):
+            pass
+
+    def _apply_font_sizes(self) -> None:
+        h = int(self._settings.get("font_head_pt", 20))
+        d = int(self._settings.get("font_def_pt", 15))
+        h = max(10, min(48, h))
+        d = max(9, min(40, d))
+        try:
+            self.txt_head.configure(font=ctk.CTkFont(size=h))
+        except Exception:
+            pass
+        try:
+            self.txt_def.configure(font=ctk.CTkFont(size=d))
+        except Exception:
+            pass
+
+    def _toggle_favorite(self) -> None:
+        if not self._entries:
+            return
+        e = self._entries[self._index]
+        eid = storage.entry_id(e)
+        if eid in self._favorites:
+            self._favorites.pop(eid, None)
+        else:
+            self._favorites[eid] = storage.favorite_meta_for_entry(e)
+        storage.save_favorites(self._favorites)
+        self._update_favorite_button()
+
+    def _update_favorite_button(self) -> None:
+        if not self._entries:
+            try:
+                self.btn_favorite.configure(state="disabled", text="收藏")
+            except Exception:
+                pass
+            return
+        try:
+            self.btn_favorite.configure(state="normal")
+        except Exception:
+            pass
+        eid = storage.entry_id(self._entries[self._index])
+        if eid in self._favorites:
+            self.btn_favorite.configure(text="已收藏")
+        else:
+            self.btn_favorite.configure(text="收藏")
+
+    def _export_favorites(self) -> None:
+        if not self._favorites:
+            messagebox.showinfo("导出收藏", "当前没有收藏词条。")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("文本", "*.txt"), ("全部", "*.*")],
+            title="导出收藏为 TXT",
+        )
+        if not path:
+            return
+        lines: List[str] = []
+        for _eid, meta in sorted(
+            self._favorites.items(),
+            key=lambda x: (x[1].get("source", ""), x[1].get("headline", "")),
+        ):
+            head = meta.get("headline", "")
+            defs = (meta.get("definitions") or "").strip()
+            lines.append(head)
+            if defs:
+                lines.append(defs)
+            lines.append("")
+        Path(path).write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+        messagebox.showinfo("导出收藏", f"已写入：\n{path}")
 
     # —— 显示与词库 —— #
 
@@ -247,27 +502,26 @@ class VocabPlayerApp(ctk.CTk):
             return self._default_text_fg()
         return hx
 
-    def _update_content_text_label(self) -> None:
-        hx = str(self._settings.get("text_color_hex", "") or "").strip()
-        if hx:
-            self.lbl_content_text_val.configure(text=hx)
-        else:
-            self.lbl_content_text_val.configure(text="主题默认")
-
     def _apply_chrome_text_colors(self) -> None:
-        """路径、统计、透明度、背景说明、文字色说明等沿用主题文字色。"""
         c = self._default_text_fg()
-        for w in (
-            self.lbl_folder,
-            self.lbl_count,
-            self.lbl_source,
-            self.lbl_alpha,
-            self.lbl_bg_head_val,
-            self.lbl_bg_def_val,
-            self.lbl_content_text_val,
-        ):
+        for w in (self.lbl_folder, self.lbl_count, self.lbl_source, self.entry_interval):
             try:
                 w.configure(text_color=c)
+            except Exception:
+                pass
+        sw = self._settings_win
+        if sw is not None:
+            try:
+                if sw.winfo_exists():
+                    for w in (
+                        sw.lbl_content_text_val,
+                        sw.lbl_alpha,
+                        sw.lbl_bg_head_val,
+                        sw.lbl_bg_def_val,
+                        sw.lbl_font_head_pt,
+                        sw.lbl_font_def_pt,
+                    ):
+                        w.configure(text_color=c)
             except Exception:
                 pass
 
@@ -298,16 +552,6 @@ class VocabPlayerApp(ctk.CTk):
         except Exception:
             pass
 
-    def _update_bg_labels(self) -> None:
-        if str(self._settings.get("bg_head_mode", "default")) == "custom":
-            self.lbl_bg_head_val.configure(text=str(self._settings.get("bg_head_hex", "")))
-        else:
-            self.lbl_bg_head_val.configure(text="跟随主题")
-        if str(self._settings.get("bg_def_mode", "default")) == "custom":
-            self.lbl_bg_def_val.configure(text=str(self._settings.get("bg_def_hex", "")))
-        else:
-            self.lbl_bg_def_val.configure(text="跟随主题")
-
     def _pick_bg_head(self) -> None:
         init = str(self._settings.get("bg_head_hex", "#F0F0F0"))
         if str(self._settings.get("bg_head_mode", "default")) != "custom":
@@ -318,9 +562,13 @@ class VocabPlayerApp(ctk.CTk):
         self._settings["bg_head_hex"] = tup[1]
         self._settings["bg_head_mode"] = "custom"
         self._apply_area_backgrounds()
-        self._update_bg_labels()
         self._apply_text_color()
         self._schedule_save_settings()
+        if self._settings_win:
+            try:
+                self._settings_win.sync_labels_from_app()
+            except Exception:
+                pass
 
     def _pick_bg_def(self) -> None:
         init = str(self._settings.get("bg_def_hex", "#FFFFFF"))
@@ -332,17 +580,25 @@ class VocabPlayerApp(ctk.CTk):
         self._settings["bg_def_hex"] = tup[1]
         self._settings["bg_def_mode"] = "custom"
         self._apply_area_backgrounds()
-        self._update_bg_labels()
         self._apply_text_color()
         self._schedule_save_settings()
+        if self._settings_win:
+            try:
+                self._settings_win.sync_labels_from_app()
+            except Exception:
+                pass
 
     def _reset_area_bgs(self) -> None:
         self._settings["bg_head_mode"] = "default"
         self._settings["bg_def_mode"] = "default"
         self._apply_area_backgrounds()
-        self._update_bg_labels()
         self._apply_text_color()
         self._schedule_save_settings()
+        if self._settings_win:
+            try:
+                self._settings_win.sync_labels_from_app()
+            except Exception:
+                pass
 
     def _apply_text_color(self) -> None:
         c = self._resolved_content_text_color()
@@ -358,23 +614,35 @@ class VocabPlayerApp(ctk.CTk):
         if not tup or tup[1] is None:
             return
         self._settings["text_color_hex"] = tup[1]
-        self._update_content_text_label()
         self._apply_text_color()
         self._apply_chrome_text_colors()
         self._schedule_save_settings()
+        if self._settings_win:
+            try:
+                self._settings_win.sync_labels_from_app()
+            except Exception:
+                pass
 
     def _reset_content_text_color(self) -> None:
         self._settings["text_color_hex"] = ""
-        self._update_content_text_label()
         self._apply_text_color()
         self._apply_chrome_text_colors()
         self._schedule_save_settings()
+        if self._settings_win:
+            try:
+                self._settings_win.sync_labels_from_app()
+            except Exception:
+                pass
 
     def _on_alpha_slider(self, value: float | str) -> None:
         a = float(value)
         self._apply_alpha(a)
         pct = int(round(a * 100))
-        self.lbl_alpha.configure(text=f"{pct}%")
+        if self._settings_win:
+            try:
+                self._settings_win.lbl_alpha.configure(text=f"{pct}%")
+            except Exception:
+                pass
         self._settings["alpha"] = a
         self._schedule_save_settings()
 
@@ -399,8 +667,11 @@ class VocabPlayerApp(ctk.CTk):
         self._save_settings_after_id = self.after(400, _do)
 
     def _flush_settings(self) -> None:
+        self._flush_settings_from_settings_ui()
+        self._flush_interval_from_main_entry()
         self._settings["hide_remembered"] = self.var_hide_remembered.get()
         self._settings["shuffle_mode"] = self.var_shuffle.get()
+        self._settings["auto_advance"] = self.var_auto.get()
         storage.save_settings(self._settings)
 
     def _set_text_widgets(self, head: str, body: str, source: str) -> None:
@@ -428,22 +699,24 @@ class VocabPlayerApp(ctk.CTk):
         if not self._entries:
             msg = "当前没有可显示的词条。"
             if total_pool > 0:
-                msg += "\n可关闭「隐藏已记住」或点击「管理已记住…」移除部分条目。"
+                msg += "\n可关闭「隐藏已记住」或在设置中打开「管理已记住…」移除部分条目。"
             else:
-                msg += "\n请选择包含 PDF 或 TXT 的文件夹。"
+                msg += "\n请点击上方「选择文件夹」或「单个文件…」加载 PDF / TXT。"
             self._set_text_widgets("", msg, "")
             self.lbl_count.configure(text=f"0 条（词库 {total_pool}，已记住 {rem}）")
+            self._update_favorite_button()
             return
 
         e = self._entries[self._index]
         vis_n = len(self._entries)
-        head = f"{e.word}  |  {e.reading}\n（{self._index + 1} / {vis_n}）"
+        head = f"{e.word}  |  {e.reading}"
         self._set_text_widgets(
             head,
             e.definitions or "（无释义行）",
             f"来源：{e.source}  ·  词库 {total_pool} 条  ·  已记住 {rem} 条",
         )
         self.lbl_count.configure(text=f"{vis_n} 条显示（词库 {total_pool}，已记住 {rem}）")
+        self._update_favorite_button()
 
     def _rebuild_visible(self, reset_index: bool = False) -> None:
         hide = self.var_hide_remembered.get()
@@ -469,6 +742,8 @@ class VocabPlayerApp(ctk.CTk):
         if folder_hint:
             self.lbl_folder.configure(text=str(folder_hint))
         self._rebuild_visible(reset_index=True)
+        if self.var_auto.get() and self._entries:
+            self.after(120, self._start_auto)
 
     def _mark_current_remembered(self) -> None:
         if not self._entries:
@@ -608,10 +883,25 @@ class VocabPlayerApp(ctk.CTk):
 
     def _interval_sec(self) -> float:
         try:
-            v = float(self.spin_interval.get().strip().replace(",", "."))
+            raw = self.entry_interval.get().strip().replace(",", ".")
+            v = float(raw)
             return max(0.5, min(120.0, v))
-        except ValueError:
+        except (ValueError, tk.TclError, AttributeError):
+            pass
+        try:
+            v = float(self._settings.get("auto_interval_sec", 2.0))
+            return max(0.5, min(120.0, v))
+        except (TypeError, ValueError):
             return 2.0
+
+    def _current_voice(self) -> str:
+        if self._settings_win is not None:
+            try:
+                if self._settings_win.winfo_exists():
+                    return self._settings_win.combo_voice.get() or DEFAULT_VOICE
+            except (tk.TclError, AttributeError):
+                pass
+        return str(self._settings.get("tts_voice", DEFAULT_VOICE) or DEFAULT_VOICE)
 
     def _play_tts(self) -> None:
         if not self._entries:
@@ -620,7 +910,7 @@ class VocabPlayerApp(ctk.CTk):
         text = reading_for_tts(e.reading)
         if not text:
             return
-        voice = self.combo_voice.get() or DEFAULT_VOICE
+        voice = self._current_voice()
 
         def run() -> None:
             if not self._tts_busy.acquire(blocking=False):
@@ -696,6 +986,7 @@ class VocabPlayerApp(ctk.CTk):
             self._start_auto()
         else:
             self._stop_auto()
+        self._schedule_save_settings()
 
     def _start_auto(self) -> None:
         if not self._entries:
@@ -708,7 +999,7 @@ class VocabPlayerApp(ctk.CTk):
             while not self._auto_stop.is_set() and self.var_auto.get():
                 if not self._entries:
                     break
-                voice = self.combo_voice.get() or DEFAULT_VOICE
+                voice = self._current_voice()
                 e = self._entries[self._index]
                 text = reading_for_tts(e.reading)
                 with self._tts_busy:
@@ -737,6 +1028,12 @@ class VocabPlayerApp(ctk.CTk):
 
     def _on_close(self) -> None:
         self._stop_auto()
+        if self._settings_win is not None:
+            try:
+                if self._settings_win.winfo_exists():
+                    self._flush_settings_from_settings_ui()
+            except Exception:
+                pass
         if self._save_settings_after_id is not None:
             try:
                 self.after_cancel(self._save_settings_after_id)
